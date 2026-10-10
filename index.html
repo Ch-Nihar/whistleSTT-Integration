@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Whistle Speech to Text</title>
+  <style>
+    :root {
+      font-family: Arial, sans-serif;
+      color: #172033;
+      background: #f3f6fb;
+    }
+    body {
+      max-width: 760px;
+      margin: 48px auto;
+      padding: 0 18px;
+    }
+    .panel {
+      background: #fff;
+      border: 1px solid #e3e8f0;
+      border-radius: 16px;
+      padding: 28px;
+      box-shadow: 0 8px 28px rgba(20, 35, 60, .07);
+    }
+    h1 { margin-top: 0; font-size: 1.65rem; }
+    .muted { color: #637087; line-height: 1.5; }
+    .controls { display: flex; gap: 10px; flex-wrap: wrap; margin: 22px 0 12px; }
+    button {
+      border: 0;
+      border-radius: 9px;
+      padding: 12px 16px;
+      font-size: 1rem;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    button:disabled { opacity: .5; cursor: not-allowed; }
+    #recordButton { background: #1769e0; color: #fff; }
+    #stopButton { background: #d93838; color: #fff; }
+    #clearButton { background: #e9eef6; color: #172033; }
+    #status { min-height: 24px; margin: 14px 0; color: #40516b; }
+    label { display: block; font-weight: 700; margin: 20px 0 8px; }
+    textarea {
+      display: block;
+      box-sizing: border-box;
+      width: 100%;
+      min-height: 190px;
+      resize: vertical;
+      border: 1px solid #ccd5e3;
+      border-radius: 10px;
+      padding: 13px;
+      font: inherit;
+      line-height: 1.5;
+    }
+    .small { font-size: .88rem; }
+  </style>
+</head>
+<body>
+  <main class="panel">
+    <h1>🎙️ Whistle Speech to Text</h1>
+    <p class="muted">Record a short voice clip, then send it to your local FastAPI + Whistle backend for transcription.</p>
+
+    <div class="controls">
+      <button id="recordButton" type="button">🎙 Start recording</button>
+      <button id="stopButton" type="button" disabled>⏹ Stop & transcribe</button>
+      <button id="clearButton" type="button">Clear text</button>
+    </div>
+
+    <p id="status" role="status" aria-live="polite">Ready. Allow microphone access when prompted.</p>
+
+    <label for="transcription">Recognized text</label>
+    <textarea id="transcription" placeholder="Your transcription will appear here..." spellcheck="true"></textarea>
+    <p class="muted small">Tip: Keep each recording under 30 seconds for this starter version. Audio is sent to the backend running on this same server.</p>
+  </main>
+
+<script>
+(() => {
+  const recordButton = document.getElementById("recordButton");
+  const stopButton = document.getElementById("stopButton");
+  const clearButton = document.getElementById("clearButton");
+  const status = document.getElementById("status");
+  const transcription = document.getElementById("transcription");
+
+  let audioContext = null;
+  let source = null;
+  let processor = null;
+  let stream = null;
+  let chunks = [];
+  let isRecording = false;
+
+  recordButton.addEventListener("click", startRecording);
+  stopButton.addEventListener("click", stopAndTranscribe);
+  clearButton.addEventListener("click", () => {
+    transcription.value = "";
+    status.textContent = "Text cleared.";
+  });
+
+  async function startRecording() {
+    try {
+      if (!navigator.mediaDevices?.getUserMedia) {
+        throw new Error("Microphone access is unavailable. Open this page from localhost or HTTPS.");
+      }
+
+      stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          channelCount: 1,
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true
+        }
+      });
+
+      audioContext = new AudioContext();
+      source = audioContext.createMediaStreamSource(stream);
+      processor = audioContext.createScriptProcessor(4096, 1, 1);
+      chunks = [];
+      isRecording = true;
+
+      processor.onaudioprocess = event => {
+        if (isRecording) {
+          chunks.push(new Float32Array(event.inputBuffer.getChannelData(0)));
+        }
+      };
+
+      source.connect(processor);
+      // A muted gain node keeps the processor active without microphone feedback.
+      const mute = audioContext.createGain();
+      mute.gain.value = 0;
+      processor.connect(mute);
+      mute.connect(audioContext.destination);
+
+      recordButton.disabled = true;
+      stopButton.disabled = false;
+      status.textContent = "🔴 Recording… Speak now. Stop before 30 seconds.";
+    } catch (error) {
+      cleanup();
+      status.textContent = "Microphone error: " + error.message;
+    }
+  }
+
+  async function stopAndTranscribe() {
+    if (!isRecording) return;
+
+    isRecording = false;
+    recordButton.disabled = true;
+    stopButton.disabled = true;
+    status.textContent = "Preparing audio…";
+
+    const sampleRate = audioContext.sampleRate;
+    const samples = concatenate(chunks);
+    cleanup();
+
+    if (!samples.length) {
+      status.textContent = "No audio was captured. Please try again.";
+      recordButton.disabled = false;
+      return;
+    }
+
+    try {
+      const mono16k = resample(samples, sampleRate, 16000);
+      const wavBlob = encodeWav(mono16k, 16000);
+      const formData = new FormData();
+      formData.append("audio", wavBlob, "recording.wav");
+
+      status.textContent = "Transcribing with Whistle…";
+      const response = await fetch("/transcribe", {
+        method: "POST",
+        body: formData
+      });
+
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(result.detail || result.error || `Server error (${response.status})`);
+      }
+
+      transcription.value = result.text || "";
+      status.textContent = result.text
+        ? `Transcription complete${result.language ? " · Language: " + result.language : ""}.`
+        : "Request completed, but no text was returned.";
+    } catch (error) {
+      status.textContent = "Transcription error: " + error.message;
+    } finally {
+      recordButton.disabled = false;
+    }
+  }
+
+  function cleanup() {
+    try { processor?.disconnect(); } catch (_) {}
+    try { source?.disconnect(); } catch (_) {}
+    if (stream) stream.getTracks().forEach(track => track.stop());
+    if (audioContext && audioContext.state !== "closed") {
+      audioContext.close().catch(() => {});
+    }
+    processor = null;
+    source = null;
+    stream = null;
+    audioContext = null;
+  }
+
+  function concatenate(arrays) {
+    const length = arrays.reduce((sum, array) => sum + array.length, 0);
+    const output = new Float32Array(length);
+    let offset = 0;
+    for (const array of arrays) {
+      output.set(array, offset);
+      offset += array.length;
+    }
+    return output;
+  }
+
+  // Downsample by averaging input samples in each output interval.
+  function resample(input, fromRate, toRate) {
+    if (fromRate === toRate) return input;
+    const ratio = fromRate / toRate;
+    const output = new Float32Array(Math.floor(input.length / ratio));
+    for (let i = 0; i < output.length; i++) {
+      const start = Math.floor(i * ratio);
+      const end = Math.min(Math.floor((i + 1) * ratio), input.length);
+      let sum = 0;
+      for (let j = start; j < end; j++) sum += input[j];
+      output[i] = end > start ? sum / (end - start) : 0;
+    }
+    return output;
+  }
+
+  function encodeWav(samples, sampleRate) {
+    const buffer = new ArrayBuffer(44 + samples.length * 2);
+    const view = new DataView(buffer);
+
+    function writeString(offset, value) {
+      for (let i = 0; i < value.length; i++) view.setUint8(offset + i, value.charCodeAt(i));
+    }
+
+    writeString(0, "RIFF");
+    view.setUint32(4, 36 + samples.length * 2, true);
+    writeString(8, "WAVE");
+    writeString(12, "fmt ");
+    view.setUint32(16, 16, true);
+    view.setUint16(20, 1, true); // PCM
+    view.setUint16(22, 1, true); // mono
+    view.setUint32(24, sampleRate, true);
+    view.setUint32(28, sampleRate * 2, true);
+    view.setUint16(32, 2, true);
+    view.setUint16(34, 16, true);
+    writeString(36, "data");
+    view.setUint32(40, samples.length * 2, true);
+
+    for (let i = 0; i < samples.length; i++) {
+      const sample = Math.max(-1, Math.min(1, samples[i]));
+      view.setInt16(44 + i * 2, sample < 0 ? sample * 32768 : sample * 32767, true);
+    }
+
+    return new Blob([buffer], { type: "audio/wav" });
+  }
+})();
+</script>
+</body>
+</html>

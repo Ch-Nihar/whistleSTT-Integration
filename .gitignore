@@ -1,0 +1,25 @@
+
+# Python virtual environment
+.venv/
+venv/
+
+# Python cache
+__pycache__/
+*.py[cod]
+
+# Environment variables and secrets
+.env
+.env.*
+
+# Logs
+*.log
+
+# Audio recordings (avoid committing large test files)
+*.wav
+*.mp3
+*.m4a
+
+# Editor and OS files
+.vscode/
+.DS_Store
+Thumbs.db
