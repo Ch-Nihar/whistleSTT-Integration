@@ -1,6 +1,6 @@
 # Cactus Whistle STT Integration using FastAPI
 
-A small local speech-to-text (STT) demo using **Cactus Whistle** with a **FastAPI** backend and a browser-based microphone interface.
+A small local speech-to-text (STT) demo using **Cactus Whistle** with a **FastAPI** backend and a browser-based microphone interface. The best thing is that it works on CPU.
 
 ## Features
 
@@ -9,6 +9,7 @@ A small local speech-to-text (STT) demo using **Cactus Whistle** with a **FastAP
 - Send the WAV recording to a local FastAPI endpoint.
 - Transcribe the audio using `needle.transcribe()`.
 - Display the recognized text in the webpage.
+- Works on CPU
 
 ## Requirements
 
